@@ -1,11 +1,11 @@
-# post-receive-watchdog
-Git post-receive hook for tracking changes about which you would like to know
+## post-receive-watchdog
+Git post-receive hook for tracking (email notifications) changes which you would like to know about.
 
-This tool helps track file changes (only*) in certain files in your git repository.
+This tool helps to track changes in certain files (only*) in your git repository.
 
-Configuration is dead simple, its based on ini file and python [regular expression](https://docs.python.org/2/library/re.html) for file matching:
+Configuration is dead simple. It's based on ini file and python [regular expression](https://docs.python.org/2/library/re.html) for file matching:
 
-## config example:
+### config example:
 
 ```
 [AllChanges]
@@ -21,16 +21,16 @@ files:
     single-file.py
 ```
 
-## features under development
+### features under development
 
 * tracking on specyfic branch
 * tracking operations on branches / tags (create, delete)
-* move some configuration to git
+* moving some of configuration to git
 
-## helpful links
+### helpful links
 
 * [Ben Tasker post-receive hook](https://www.bentasker.co.uk/documentation/development-programming/288-sending-commit-notifications-on-receive-using-git-post-hooks)
 * [Original post-receive-email hook](https://github.com/git/git/blob/master/contrib/hooks/post-receive-email)
 
-## Others
+### others
 Thanks to [@stachjankowski](https://github.com/stachjankowski) for help.
