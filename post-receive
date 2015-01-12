@@ -1,0 +1,231 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import locale
+import re
+import os
+import subprocess
+import smtplib
+import ConfigParser
+import logging
+
+from email.charset import add_charset, QP
+from email.mime.text import MIMEText
+from socket import gethostname
+
+CONFIG_FILE = 'post-receive-config.ini'
+FROM = 'postmaster@example.com'
+COMMIT_URL = 'https://github.com/falsyvalues/%(repository)s/commit/%(commit)s'
+DIFF_URL = 'https://github.com/falsyvalues/%(repository)s/commit/%(commit)s?diff=split'
+GIT_COMMIT_FIELDS = ['id', 'author_name', 'author_email', 'date', 'message', 'files']
+GIT_LOG_FORMAT = ['%H', '%an', '%ae', '%ai', '%s']
+
+class NotificationRule(object):
+    def __init__(self, name):
+        self.name = name
+        self.recipients = []
+        self._mask = []
+
+    def add_recipients(self, recipients):
+        self.recipients += recipients
+
+    def add_files(self, masks):
+        for mask in masks:
+            self._mask.append(re.compile(mask))
+
+    def file_match(self, filepath):
+        for mask in self._mask:
+            if mask.search(filepath):
+                return True
+        return False
+
+class NotificationConfig(object):
+    def __init__(self, filepath):
+        self.filters = []
+        self.parse(filepath)
+
+    def parse(self, filepath):
+        config = ConfigParser.ConfigParser()
+        config.read([filepath])
+        for section_name in config.sections():
+            filtering_config = NotificationRule(section_name)
+            for item_name, value in config.items(section_name):
+                if item_name == 'recipients':
+                    filtering_config.add_recipients(value.strip().split("\n"))
+                elif item_name == 'files':
+                    filtering_config.add_files(value.strip().split("\n"))
+            self.filters.append(filtering_config)
+
+    def matching(self, files):
+        matched = []
+        for fltr in self.filters:
+            matching_files = []
+            try:
+                for filepath in files:
+                    if fltr.file_match(filepath):
+                        matching_files.append(filepath)
+                if matching_files:
+                    matched.append({
+                       'filter_name': fltr.name,
+                       'matching_files': matching_files,
+                       'recipients': fltr.recipients
+                    })
+            except TypeError:
+                break
+
+        return matched
+
+NOTIFICATION_CONFIG = NotificationConfig(os.path.dirname(os.path.realpath(__file__)) + os.sep + CONFIG_FILE)
+
+def git(args, strip=True):
+    args = ['git'] + args
+    proc = subprocess.Popen(args, stdout = subprocess.PIPE)
+    output = proc.stdout.read().decode(sys.stdin.encoding or locale.getpreferredencoding(True))
+    if strip:
+        return output.strip()
+    return output
+
+def get_config(key):
+    details = git(['config', '%s' % (key)])
+    if len(details) > 0:
+        return details
+    return None
+
+def get_repo_name():
+    if git(['rev-parse', '--is-bare-repository']) == 'true':
+        name = os.path.basename(os.getcwd())
+        if name.endswith('.git'):
+            name = name[:-4]
+        return name
+    else:
+        return os.path.basename(os.path.dirname(os.getcwd()))
+
+def get_revisions(old, new, refname):
+    """ Process commit range from old to new on refname
+
+    """
+    if old == '0' * 40:
+        change_type = 'create'
+    elif new == '0' * 40:
+        change_type = 'delete'
+    else:
+        change_type = 'update'
+
+    if change_type in [ 'create', 'update' ]:
+        rev = new
+        rev_type = git(['cat-file', '-t', new])
+    else:
+        rev = old
+        rev_type = git(['cat-file', '-t', old])
+
+    # un-annotated tag
+    if rev_type == 'commit' and re.match('refs/tags/', refname):
+        refname_type = 'tag'
+        refname_short = refname.replace('refs/tags/', '')
+        return []
+    # annotated tag
+    elif rev_type == 'tag' and re.match('refs/tags/', refname):
+        refname_type = 'annotated tag'
+        refname_short = refname.replace('refs/tags/', '')
+        return []
+    # branch
+    elif rev_type == 'commit' and re.match('refs/heads/', refname):
+        refname_type = 'branch'
+        refname_short = refname.replace('refs/heads/', '')
+    # tracking branch
+    elif rev_type == 'commit' and re.match('refs/remotes/', refname):
+        refname_type = 'tracking branch'
+        refname_short = refname.replace('refs/remotes/', '')
+    # anything else (is there anything else?)
+    else:
+        logging.warning('Unhandled case for the rev_type: %s, refname: %s' % (rev_type, refname))
+        return []
+
+    if change_type == 'delete':
+        return []
+
+    git_format = '%x1e' + '%x1f'.join(GIT_LOG_FORMAT) + '%x1e'
+
+    if change_type == 'update':
+        output = git(['log', '--reverse', '--name-only', '--format=%s' % (git_format), '%s..%s' % (old, new)], False)
+    elif change_type == 'create':
+        output = git(['log', '--reverse', '--name-only', '--format=%s' % (git_format), '%s' % (new)], False)
+
+    # Combine --name-only result (changed files) with formatted log output
+    output = output.strip('\n\x1e').replace('\x1e\n\n', '\x1f').split("\x1e")
+
+    expected_len = len(GIT_COMMIT_FIELDS)
+    # Split commit row into matrix (equal size lists)
+    output = [ (row.strip().split("\x1f") + [ None ] * expected_len)[:expected_len] for row in filter(lambda x: x.strip(), output) ]
+
+    # Create dict base on chunks
+    output = [ dict(zip(GIT_COMMIT_FIELDS, row)) for row in output ]
+
+    for row in output:
+        if row['files']:
+            row['files'] = row['files'].strip('\n').split('\n')
+
+    return output
+
+def get_matching_notifications(revision):
+    return NOTIFICATION_CONFIG.matching(revision['files'])
+
+def process_revisions(old, new, ref):
+    """Cycle through each revision in the push
+    """
+    logging.debug('Process revisions started: %s %s %s' % (old, new, ref))
+    revisions = get_revisions(old, new, ref)
+    for revision in revisions:
+        process_mail(revision, get_matching_notifications(revision))
+
+def process_mail(revision, matching_filters):
+    for matched_filter in matching_filters:
+        mail(revision, matched_filter)
+
+def mail(revision, matched_filter):
+    """Mail out the commit
+    """
+    add_charset('utf-8', QP, QP)
+
+    msg = MIMEText(mail_body(revision, matched_filter).encode('utf-8'), _charset='utf-8')
+    msg['Subject'] = '[Git][watchdog][%s] repo %s' % ( matched_filter['filter_name'], REPO_NAME )
+    msg['From'] = FROM
+    msg['To'] = ', '.join(matched_filter['recipients'])
+
+    try:
+        server = smtplib.SMTP('localhost')
+        server.sendmail(FROM, matched_filter['recipients'], msg.as_string())
+        server.quit()
+    except IOError as err:
+        print 'Sending notification failed:', err
+
+def mail_body(revision, matched_filter):
+    return (
+        'Repo: %s' % ( REPO_NAME ) + '\n' +
+        'Host: %s' % ( gethostname() ) + '\n\n' +
+        'commit: %(id)s\n\n' +
+        'Author: %(author_name)s <%(author_email)s>\n' +
+        'Date: %(date)s\n\n' +
+        'Commit Message: %(message)s\n\n' +
+        '\n'.join(revision['files']) +
+        '\n\n[View Commit|' + COMMIT_URL % { 'repository': REPO_NAME, 'commit': revision['id'] } + "]" +
+            " | [View Changes|" + DIFF_URL % { 'repository': REPO_NAME, 'commit': revision['id'] } + "]" +
+            "\n\n--\n" +
+        '------- You are receiving this mail because you are watching these files: -------\n' +
+        '\n'.join(matched_filter['matching_files'])
+    ) % revision
+
+
+# Grab some information about the repo
+REPO_NAME = get_repo_name()
+REPO_DESC = ""
+try:
+    REPO_DESC = get_config('meta.description') or open('description', 'r').read()
+except Exception:
+    pass
+
+if __name__ == '__main__':
+    for line in sys.stdin.xreadlines():
+        old, new, ref = line.strip().split(' ')
+        data = process_revisions(old, new, ref)
