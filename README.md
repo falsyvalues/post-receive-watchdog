@@ -3,9 +3,9 @@ Git post-receive hook for tracking changes about which you would like to know
 
 This tool helps track file changes (only*) in certain files in your git repository.
 
-Configuration is dead simple, its based on ini file and python <a href="https://docs.python.org/2/library/re.html">regular expression</a> for file matching:
+Configuration is dead simple, its based on ini file and python [regular expression](https://docs.python.org/2/library/re.html) for file matching:
 
-# config example:
+## config example:
 
 ```
 [AllChanges]
@@ -21,13 +21,16 @@ files:
     single-file.py
 ```
 
-# future features
+## features under development
 
 * tracking on specyfic branch
 * tracking operations on branches / tags (create, delete)
+* move some configuration to git
 
+## helpful links
 
-<a href="https://www.bentasker.co.uk/documentation/development-programming/288-sending-commit-notifications-on-receive-using-git-post-hooks">Ben Tasker</a> post-receive hook
-<a href="https://github.com/git/git/blob/master/contrib/hooks/post-receive-email">original post-receive-email hook</a>
+* [Ben Tasker post-receive hook](https://www.bentasker.co.uk/documentation/development-programming/288-sending-commit-notifications-on-receive-using-git-post-hooks)
+* [Original post-receive-email hook](https://github.com/git/git/blob/master/contrib/hooks/post-receive-email)
 
-Thanks to @stachjankowski for help.
+## Others
+Thanks to [@stachjankowski](https://github.com/stachjankowski) for help.
